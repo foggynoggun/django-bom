@@ -1,4 +1,5 @@
 from .base_classes import AsDictModel
+from .utils import stringify_list
 from collections import OrderedDict
 from djmoney.money import Money
 import logging
@@ -144,6 +145,7 @@ class PartBomItem(AsDictModel):
             'do_not_load': self.do_not_load,
             'part_class': self.part.number_class.name if self.part.number_class else '',
             'references': self.references,
+            'alternates': self.alternates_for_export(),
             'part_synopsis': self.part_revision.synopsis(),
             'part_revision': self.part_revision.revision,
             'part_manufacturer': self.part.primary_manufacturer_part.manufacturer.name if self.part.primary_manufacturer_part is not None and self.part.primary_manufacturer_part.manufacturer is not None else '',
@@ -158,6 +160,17 @@ class PartBomItem(AsDictModel):
             'part_out_of_pocket_cost': self.out_of_pocket_cost(),
             'part_lead_time_days': self.seller_part.lead_time_days if self.seller_part is not None else 0,
         }
+
+    def alternates_for_export(self):
+        """Comma-separated full part numbers of this subpart's acceptable alternates.
+
+        Expressed exactly like the 'part_number' column so a consumer resolves them the
+        same way. Note the underlying relation is to PartRevision, so the specific
+        revision is not represented here; the part number is the stable key.
+        """
+        if self.alternates is None:
+            return ''
+        return stringify_list([a.part.full_part_number() for a in self.alternates.all()])
 
     def manufacturer_parts_for_export(self):
         return [mp.as_dict_for_export() for mp in self.part.manufacturer_parts(exclude_primary=True)]
