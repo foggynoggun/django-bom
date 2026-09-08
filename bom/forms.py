@@ -923,6 +923,13 @@ class SubpartForm(OrganizationFormMixin, forms.ModelForm):
         self.ignore_part_revision = kwargs.pop('ignore_part_revision', False)
         super().__init__(*args, **kwargs)
 
+        # A ModelForm auto-builds alternates as ModelMultipleChoiceField with
+        # queryset=PartRevision.objects.all() -- unscoped, exposing every organization's
+        # revisions. Scope it, matching AddSubpartForm.
+        if 'alternates' in self.fields:
+            self.fields['alternates'].queryset = PartRevision.objects.filter(
+                part__organization=self.organization)
+
         if not self.part_id:
             self.Meta.exclude = ['part_revision']
         else:
@@ -1323,6 +1330,44 @@ class BOMCSVForm(BaseCSVForm):
             parent_part_revision.save()
         return parent_part_revision
 
+    def _resolve_alternates(self, part_dict, row_count, csv_headers):
+        """Resolve the 'alternates' cell into PartRevision pks for SubpartForm.
+
+        The cell holds full part numbers in the same form as the 'part_number' column, so a
+        consumer resolves them the same way. Each maps to its part's LATEST revision, mirroring
+        the export, which does not carry the specific revision.
+
+        An unresolvable alternate is warned about and skipped rather than failing the row: a bad
+        alternate must never block the subpart itself from importing.
+        """
+        raw = csv_headers.get_val_from_row(part_dict, 'alternates')
+        if not raw:
+            return []
+        pks, seen = [], set()
+        for number in listify_string(raw):
+            if number in seen:
+                continue
+            seen.add(number)
+            try:
+                (nc, ni, nv) = Part.parse_partial_part_number(number, self.organization)
+            except AttributeError:
+                self.warnings.append(
+                    f"Row {row_count}: could not parse alternate part number '{number}'. Alternate skipped.")
+                continue
+            candidates = Part.objects.filter(number_class__code=nc, number_item=ni,
+                                             number_variation=nv, organization=self.organization)
+            if len(candidates) != 1:
+                self.warnings.append(
+                    f"Row {row_count}: found {len(candidates)} parts for alternate '{number}', expected 1. Alternate skipped.")
+                continue
+            revision = candidates[0].latest()
+            if not revision:
+                self.warnings.append(
+                    f"Row {row_count}: alternate '{number}' has no revisions. Alternate skipped.")
+                continue
+            pks.append(revision.pk)
+        return pks
+
     def _process_subpart_row(self, part_dict, row_count, csv_headers, parent_part_revision):
         dnp = csv_headers.get_val_from_row(part_dict, 'dnp')
         reference = csv_headers.get_val_from_row(part_dict, 'reference')
@@ -1431,6 +1476,11 @@ class BOMCSVForm(BaseCSVForm):
         if not part_revision_form.is_valid():
             add_nonfield_error_from_existing(part_revision_form, self, f'Row {row_count} - ')
             return None
+
+        # SubpartForm carries 'alternates' as a ModelMultipleChoiceField, so it expects pks.
+        # The CSV gives full part numbers; resolve them first.
+        part_dict = dict(part_dict)
+        part_dict['alternates'] = self._resolve_alternates(part_dict, row_count, csv_headers)
 
         subpart_form = SubpartForm(part_dict, instance=existing_subpart, ignore_part_revision=True,
                                    organization=self.organization)
