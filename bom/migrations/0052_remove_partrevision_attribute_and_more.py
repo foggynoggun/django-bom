@@ -270,13 +270,27 @@ def migrate_part_revision_data(apps, schema_editor):
             'a': 'A', 'amp': 'A', 'amps': 'A', 'ampere': 'A', 'ma': 'mA', 'ua': 'uA', 'ka': 'kA', 'µa': 'uA',
             'h': 'H', 'henry': 'H', 'henries': 'H', 'mh': 'mH', 'uh': 'uH', 'nh': 'nH', 'µh': 'uH',
             'hz': 'Hz', 'khz': 'kHz', 'mhz': 'MHz', 'ghz': 'GHz',
-            'w': 'W', 'mw': 'mW', 'uw': 'uW', 'kw': 'kW', 'mw': 'MW',
+            'w': 'W', 'mw': 'mW', 'uw': 'uW', 'kw': 'kW',
             'm': 'm', 'mm': 'mm', 'cm': 'cm', 'km': 'km', 'g': 'g', 'kg': 'kg', 'mg': 'mg',
             's': 's', 'ms': 'ms', 'us': 'us', 'ns': 'ns',
             'c': 'C', 'degc': 'C', '°c': 'C', 'f': 'F', 'degf': 'F', '°f': 'F',
             'ppm': 'ppm', '%': '%', 'percent': '%'
         }
-        mapped_symbol = symbol_map.get(clean_symbol, symbol.strip())
+        # CHIT-001 fix -- do not remove without reading this.
+        # symbol_map is keyed on symbol.lower(), which cannot distinguish the SI prefix 'm' (milli)
+        # from 'M' (mega): both fold to 'm'. For every pair where BOTH members are seeded as
+        # UnitDefinitions by create_unit_definitions() above, the folded lookup silently rewrites one
+        # of them -- 'mW' resolved to 'MW', a 10^9 error, and it was a map HIT, so any audit that
+        # diffs distinct input symbols against the map's keys reported it clean.
+        # Check the exact symbol first so case-bearing units survive.
+        _case_sensitive = {
+            'mV': 'mV', 'MV': 'MV',   # millivolt  / megavolt
+            'mA': 'mA', 'MA': 'MA',   # milliamp   / megaamp
+            'mW': 'mW', 'MW': 'MW',   # milliwatt  / megawatt
+            'm\u03a9': 'm\u03a9', 'M\u03a9': 'M\u03a9',   # milliohm / megaohm
+        }
+        _exact = symbol.strip()
+        mapped_symbol = _case_sensitive.get(_exact) or symbol_map.get(clean_symbol, _exact)
         if mapped_symbol in unit_cache: return unit_cache[mapped_symbol]
         try:
             unit = UnitDefinition.objects.filter(symbol=mapped_symbol).first()
