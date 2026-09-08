@@ -1224,6 +1224,63 @@ class BOMCSVForm(forms.Form):
         self.parent_part = kwargs.pop('parent_part', None)
         super(BOMCSVForm, self).__init__(*args, **kwargs)
 
+    def _resolve_alternates(self, alternates_raw, subpart_revision, row_count):
+        """Resolve an 'alternates' CSV cell into a list of PartRevision objects.
+
+        The cell holds full part numbers in the same form as the 'part_number' column,
+        delimited the same way as reference designators. Each is resolved to its part's
+        latest revision, mirroring how the export drops the specific revision.
+
+        An alternate that cannot be resolved is warned about and skipped -- it must not
+        block the subpart itself from importing.
+        """
+        if not alternates_raw:
+            return []
+
+        revisions = []
+        seen = set()
+        for number in listify_string(alternates_raw):
+            if number in seen:
+                continue
+            seen.add(number)
+
+            if self.organization.number_scheme == NUMBER_SCHEME_SEMI_INTELLIGENT:
+                try:
+                    (number_class, number_item, number_variation) = Part.parse_partial_part_number(number, self.organization)
+                except AttributeError:
+                    self.warnings.append(
+                        f"Could not parse alternate part number '{number}' on row {row_count}. Alternate skipped.")
+                    continue
+                candidates = Part.objects.filter(
+                    number_class__code=number_class,
+                    number_item=number_item,
+                    number_variation=number_variation,
+                    organization=self.organization)
+            else:
+                candidates = Part.objects.filter(
+                    number_class=None, number_item=number, number_variation=None,
+                    organization=self.organization)
+
+            if len(candidates) != 1:
+                self.warnings.append(
+                    f"Found {len(candidates)} parts for alternate '{number}' on row {row_count}, expected 1. Alternate skipped.")
+                continue
+
+            alternate_revision = candidates[0].latest()
+            if not alternate_revision:
+                self.warnings.append(
+                    f"Alternate part '{number}' on row {row_count} has no revisions. Alternate skipped.")
+                continue
+
+            if alternate_revision == subpart_revision:
+                self.warnings.append(
+                    f"Alternate '{number}' on row {row_count} is the subpart itself. Alternate skipped.")
+                continue
+
+            revisions.append(alternate_revision)
+
+        return revisions
+
     def clean(self):
         cleaned_data = super(BOMCSVForm, self).clean()
         file = self.cleaned_data.get('file')
@@ -1286,6 +1343,7 @@ class BOMCSVForm(forms.Form):
                 mpn = csv_headers.get_val_from_row(part_dict, 'mpn')
                 count = csv_headers.get_val_from_row(part_dict, 'count')
                 reference = csv_headers.get_val_from_row(part_dict, 'reference')
+                alternates_raw = csv_headers.get_val_from_row(part_dict, 'alternates')
                 reference_list = listify_string(reference) if reference else []
 
                 if len(reference_list) != len(set(reference_list)):
@@ -1410,6 +1468,10 @@ class BOMCSVForm(forms.Form):
                         do_not_load=do_not_load
                     )
 
+                    alternate_revisions = self._resolve_alternates(alternates_raw, subpart_revision, row_count)
+                    if alternate_revisions:
+                        new_subpart.alternates.set(alternate_revisions)
+
                     AssemblySubparts.objects.get_or_create(assembly=parent_part_revision.assembly, subpart=new_subpart)
 
                     info_msg = f"Added subpart {part_number} on row {row_count} "     #TODO get part_number and self.parent_part
@@ -1428,6 +1490,15 @@ class BOMCSVForm(forms.Form):
 
                 else:
                     existing_subpart = existing_subpart_qs[0]
+
+                    # Alternates are a property of the subpart, not of a designator range, so two
+                    # rows being combined should agree on them. Warn rather than guessing a merge.
+                    incoming_alternates = self._resolve_alternates(alternates_raw, subpart_revision, row_count)
+                    if set(incoming_alternates) != set(existing_subpart.alternates.all()):
+                        self.warnings.append(
+                            f"Alternates for subpart {part_number} on row {row_count} differ from those already "
+                            f"recorded for the matching subpart. Existing alternates left unchanged.")
+
                     existing_subpart_reference_list = listify_string(existing_subpart.reference)
                     if len(reference_list) == 0 or len(existing_subpart_reference_list) == 0:
                         self.add_error(None,
