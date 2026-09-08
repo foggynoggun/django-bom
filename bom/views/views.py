@@ -1312,12 +1312,17 @@ def add_subpart(request, part_id, part_revision_id):
             reference = add_subpart_form.cleaned_data['reference']
             dnl = add_subpart_form.cleaned_data['do_not_load']
             count = add_subpart_form.cleaned_data['count']
+            alternates = add_subpart_form.cleaned_data['alternates']
 
             first_level_bom = part_revision.assembly.subparts.filter(part_revision=subpart_part, do_not_load=dnl)
 
             if first_level_bom.count() > 0:
                 new_part = first_level_bom[0]
                 new_part.count += count
+                # Merge semantics, matching production: a non-empty selection REPLACES the existing
+                # set; an empty one leaves it alone rather than silently clearing it.
+                if len(alternates) > 0:
+                    new_part.alternates.set(alternates)
                 if reference:
                     new_part.reference = new_part.reference + ', ' + reference
                 new_part.save()
@@ -1327,6 +1332,10 @@ def add_subpart(request, part_id, part_revision_id):
                     count=count,
                     reference=reference,
                     do_not_load=dnl)
+
+                # m2m: only assignable once the row has a pk.
+                if len(alternates) > 0:
+                    new_part.alternates.set(alternates)
 
                 if part_revision.assembly is None:
                     part_revision.assembly = Assembly.objects.create()
