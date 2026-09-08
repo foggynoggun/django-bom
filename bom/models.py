@@ -907,6 +907,12 @@ class Subpart(models.Model):
     count = models.FloatField(default=1, validators=[MinValueValidator(0)])
     reference = models.TextField(default='', blank=True, null=True)
     do_not_load = models.BooleanField(default=False, verbose_name='Do Not Load')
+    # Acceptable substitutes for this subpart. Local to Simply Embedded, not upstream:
+    # a rank-less SET -- an m2m has no ordering column -- so any preference order is held
+    # downstream, not here. blank=True because SubpartAdmin declares no fields/exclude, so
+    # Django auto-builds its change form from every editable field and blank=False would
+    # make every Subpart admin save unsubmittable.
+    alternates = models.ManyToManyField('PartRevision', blank=True)
 
     def get_parent_part_revisions(self):
         """Get all PartRevisions that contain this subpart in their assembly."""
