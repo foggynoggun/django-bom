@@ -15,12 +15,6 @@ import os
 import xmlrpc
 
 
-ODOO_URL        = 'http://localhost:8069'
-ODOO_DB         = 'Octopart-Odoo_Connector'
-ODOO_USERNAME   = 'arin.johar@simplyembedded.ca'
-ODOO_PASSWORD   = 'Arin2007'
-ODOO_COMMON_URL = f"{ODOO_URL}/xmlrpc/2/common"
-ODOO_OBJECT_URL = f"{ODOO_URL}/xmlrpc/2/object"
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
