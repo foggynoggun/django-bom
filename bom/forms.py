@@ -916,7 +916,7 @@ class PartRevisionNewForm(PartRevisionForm):
 class SubpartForm(OrganizationFormMixin, forms.ModelForm):
     class Meta:
         model = Subpart
-        fields = ['part_revision', 'reference', 'count', 'do_not_load']
+        fields = ['part_revision', 'reference', 'count', 'do_not_load', 'alternates']
 
     def __init__(self, *args, **kwargs):
         self.part_id = kwargs.pop('part_id', None)
@@ -970,6 +970,15 @@ class AddSubpartForm(OrganizationFormMixin, forms.Form):
     count = forms.FloatField(required=False, label='Quantity')
     reference = forms.CharField(required=False, label="Reference")
     do_not_load = forms.BooleanField(required=False, label="do_not_load")
+    # Acceptable substitutes for this subpart. Queryset is set in __init__ so it can be scoped to
+    # the organization -- production declared PartRevision.objects.all() here, which exposed every
+    # organization's revisions in the picker. Plain multi-select: Materialize styles it, and upstream
+    # has no django-select2 dependency to reintroduce.
+    alternates = forms.ModelMultipleChoiceField(
+        required=False,
+        queryset=PartRevision.objects.none(),
+        widget=forms.SelectMultiple(attrs={'class': 'browser-default'}),
+    )
 
     def __init__(self, *args, **kwargs):
         self.part_revision_id = kwargs.pop('part_revision_id', None)
@@ -977,6 +986,8 @@ class AddSubpartForm(OrganizationFormMixin, forms.Form):
 
         self.part_revision = PartRevision.objects.get(id=self.part_revision_id)
         self.part = self.part_revision.part
+        self.fields['alternates'].queryset = PartRevision.objects.filter(
+            part__organization=self.organization).exclude(part=self.part)
         # Filter logic
         self.fields['subpart_part_number'].widget = AutocompleteTextInput(
             attrs={'placeholder': 'Select a part.'},
