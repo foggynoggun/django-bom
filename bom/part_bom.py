@@ -36,9 +36,16 @@ class PartBom(AsDictModel):
 
     def append_item_and_update(self, item):
         if item.bom_id in self.parts:
-            self.parts[item.bom_id].extended_quantity += item.extended_quantity
+            existing = self.parts[item.bom_id]
+            existing.extended_quantity += item.extended_quantity
             ref = ', ' + item.references
-            self.parts[item.bom_id].references += ref
+            existing.references += ref
+            # Union the alternates rather than discarding the incoming line's. Two occurrences of
+            # the same part in one assembly: a substitute acceptable at one is acceptable at the
+            # other. Previously the second occurrence's set was dropped silently.
+            if item.alternates:
+                seen = {a.pk for a in existing.alternates}
+                existing.alternates.extend(a for a in item.alternates if a.pk not in seen)
         else:
             self.parts[item.bom_id] = item
 
@@ -122,7 +129,10 @@ class PartBomItem(AsDictModel):
         # top_level_quantity is the highest quantity, typically a order quantity for the highest assembly level in a BOM
         # A bom item should not care about its parent quantity
         self.bom_id = bom_id
-        self.alternates = alternates  # acceptable substitutes for this BOM line, if any
+        # Acceptable substitutes for this BOM line. Materialised at construction so that the
+        # merge in append_item_and_update() is well defined: the builders pass a related
+        # manager (sp.alternates), and two managers cannot be meaningfully unioned.
+        self.alternates = list(alternates.all()) if hasattr(alternates, 'all') else list(alternates or [])
         self.part = part
         self.part_revision = part_revision
         self.do_not_load = do_not_load
