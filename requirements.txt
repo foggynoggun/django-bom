@@ -4,7 +4,6 @@ Babel==2.9.1
 bleach==3.3.0
 cachetools==4.2.2
 certifi==2021.5.30
-cffi==1.14.5
 chardet==3.0.4
 colorama==0.4.4
 cryptography==50.0.1
@@ -33,7 +32,6 @@ protobuf==3.17.3
 py-moneyed>=1.2,<2.0
 pyasn1==0.4.8
 pyasn1-modules==0.2.8
-pycparser==2.20
 Pygments==2.9.0
 PyJWT==2.4.0
 pyparsing==2.4.7
