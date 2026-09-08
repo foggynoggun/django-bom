@@ -236,6 +236,7 @@ class BOMFlatCSVHeaders(PartRevisionPropertyCSVHeaders):
         CSVHeader('do_not_load', name_options=['dnl', 'dnp', 'do_not_populate', 'do_not_load', 'do not load', 'do not populate', ]),
         CSVHeader('part_class', name_options=['class', 'part_category']),
         CSVHeader('references', name_options=['designator', 'designators', 'reference', ]),
+        CSVHeader('alternates', name_options=['alternate', 'alternate_parts', 'alternatives', 'alt', ]),
         CSVHeader('synopsis', name_options=['part_synopsis', ]),
         CSVHeader('description', name_options=['part_description', 'desc', ]),
         CSVHeader('revision', name_options=['rev', 'part_revision', 'rev.']),

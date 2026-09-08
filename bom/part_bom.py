@@ -1,6 +1,8 @@
 import logging
 from collections import OrderedDict
 
+from .utils import stringify_list
+
 from djmoney.contrib.exchange.exceptions import MissingRate
 from djmoney.contrib.exchange.models import convert_money
 from djmoney.money import Money
@@ -191,6 +193,7 @@ class PartBomItem(AsDictModel):
             'do_not_load': self.do_not_load,
             'part_class': self.part.number_class.name if self.part.number_class else '',
             'references': self.references,
+            'alternates': self.alternates_for_export(),
             'part_synopsis': self.part_revision.synopsis(),
             'part_description': self.part_revision.description,
             'part_revision': self.part_revision.revision,
@@ -215,6 +218,20 @@ class PartBomItem(AsDictModel):
                 row[prop.property_definition.form_unit_field_name] = prop.unit_definition.symbol if prop.unit_definition else ''
 
         return row
+
+    def alternates_for_export(self):
+        """Comma-separated full part numbers of this line's acceptable alternates.
+
+        Expressed exactly like the 'part_number' column so a consumer resolves them the same
+        way. The underlying relation is to PartRevision, so the specific revision is not
+        represented -- the part number is the stable key.
+
+        self.alternates is a plain list (materialised in __init__ so that the merge in
+        PartBom.append_item_and_update can union two lines), not a related manager.
+        """
+        if not self.alternates:
+            return ''
+        return stringify_list([a.part.full_part_number() for a in self.alternates])
 
     def manufacturer_parts_for_export(self):
         return [mp.as_dict_for_export() for mp in self.part.manufacturer_parts(exclude_primary=True)]
