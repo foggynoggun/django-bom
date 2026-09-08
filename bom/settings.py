@@ -7,6 +7,37 @@ from django.utils.log import DEFAULT_LOGGING
 logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+def _env_bool(name, default=False):
+    """Parse a boolean from the environment tolerantly.
+
+    Deliberately NOT production's bool(int(os.environ.get('DEBUG', 0))), which raises ValueError at
+    import time on 'false'/'true'/'False' -- and because LOG_FILE_PATH keys off DEBUG, that failure
+    also decides whether Django tries to open /var/log/indabom.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+# Deployment configuration from the environment. Placed BEFORE the local_settings import on
+# purpose: local_settings.py remains the higher-precedence override for local development, while a
+# container with no local_settings.py is configured entirely from env.
+SECRET_KEY = os.environ.get('SECRET_KEY', 'insecure-development-key-change-me')
+DEBUG = _env_bool('DEBUG', False)
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if h.strip()]
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.environ.get('DATABASE_NAME', BASE_DIR / 'db.sqlite3'),
+    }
+}
+
+BOM_SOURCING_ENCRYPTION_KEYS = [
+    k.strip() for k in os.environ.get('BOM_SOURCING_ENCRYPTION_KEYS', '').split(',') if k.strip()
+]
+
 try:
     from .local_settings import *
 except ImportError:
@@ -171,11 +202,14 @@ USE_TZ = True
 # FILE STORAGE (Static and Media)
 # --------------------------------------------------------------------------
 
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'static'
+# Env-overridable, upstream's pathlib defaults retained as the fallback. STATIC_ROOT matters
+# disproportionately: if nginx serves a volume collectstatic never wrote to, every page renders
+# completely unstyled with nothing in any log -- it reads as a CSS bug, not a config bug.
+STATIC_URL = os.environ.get('STATIC_URL', '/static/')
+STATIC_ROOT = os.environ.get('STATIC_ROOT', BASE_DIR / 'static')
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
+MEDIA_ROOT = os.environ.get('MEDIA_ROOT', BASE_DIR / 'media')
 
 # Use the Django 4.2+ STORAGES setting
 STORAGES = {
@@ -225,7 +259,15 @@ EXCHANGE_BACKEND = 'djmoney.contrib.exchange.backends.FixerBackend'
 
 # Set DEBUG to False here if not defined in local_settings
 DEBUG = locals().get('DEBUG', False)
-LOG_FILE_PATH = '/var/log/indabom/django.log' if not DEBUG else BASE_DIR / 'bom.log'
+# Env-overridable. Upstream hardcodes /var/log/indabom/django.log whenever DEBUG is falsy, so a
+# DEBUG=False run outside the container dies at import with
+#   ValueError: Unable to configure handler 'logfile'
+# before any management command executes. The default below preserves upstream's behaviour
+# exactly; the env var exists so a non-container run can point it somewhere writable.
+LOG_FILE_PATH = os.environ.get(
+    'LOG_FILE_PATH',
+    '/var/log/indabom/django.log' if not DEBUG else BASE_DIR / 'bom.log',
+)
 
 LOGGING = {
     'version': 1,
