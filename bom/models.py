@@ -658,7 +658,7 @@ class PartRevision(models.Model):
         return None
 
     def indented(self, top_level_quantity=100):
-        def indented_given_bom(bom, part_revision, parent_id=None, parent=None, qty=1, parent_qty=1, indent_level=0, subpart=None, reference='', do_not_load=False):
+        def indented_given_bom(bom, part_revision, parent_id=None, parent=None, qty=1, parent_qty=1, indent_level=0, subpart=None, reference='', do_not_load=False, alternates=None):
             bom_item_id = (parent_id or '') + (str(part_revision.id) + '-dnl' if do_not_load else str(part_revision.id))
             extended_quantity = parent_qty * qty
             total_extended_quantity = top_level_quantity * extended_quantity
@@ -681,6 +681,7 @@ class PartRevision(models.Model):
                 parent_id=parent_id,
                 subpart=subpart,
                 seller_part=seller_part,
+                alternates=alternates,
             ))
 
             indent_level = indent_level + 1
@@ -693,7 +694,8 @@ class PartRevision(models.Model):
                     qty = sp.count
                     reference = sp.reference
                     indented_given_bom(bom, sp.part_revision, parent_id=bom_item_id, parent=part_revision, qty=qty, parent_qty=parent_qty,
-                                       indent_level=indent_level, subpart=sp, reference=reference, do_not_load=sp.do_not_load)
+                                       indent_level=indent_level, subpart=sp, reference=reference, do_not_load=sp.do_not_load,
+                                       alternates=sp.alternates)
 
         bom = PartBom(part_revision=self, quantity=top_level_quantity)
         indented_given_bom(bom, self)
@@ -701,7 +703,7 @@ class PartRevision(models.Model):
         return bom
 
     def flat(self, top_level_quantity=100, sort=False):
-        def flat_given_bom(bom, part_revision, parent=None, qty=1, parent_qty=1, subpart=None, reference=''):
+        def flat_given_bom(bom, part_revision, parent=None, qty=1, parent_qty=1, subpart=None, reference='', alternates=None):
             extended_quantity = parent_qty * qty
             total_extended_quantity = top_level_quantity * extended_quantity
 
@@ -725,6 +727,7 @@ class PartRevision(models.Model):
                 quantity=qty,
                 extended_quantity=extended_quantity,
                 seller_part=seller_part,
+                alternates=alternates,
             ))
 
             if part_revision is None or part_revision.assembly is None or part_revision.assembly.subparts.count() == 0:
@@ -734,7 +737,8 @@ class PartRevision(models.Model):
                 for sp in part_revision.assembly.subparts.all():
                     qty = sp.count
                     reference = sp.reference
-                    flat_given_bom(bom, sp.part_revision, parent=part_revision, qty=qty, parent_qty=parent_qty, subpart=sp, reference=reference)
+                    flat_given_bom(bom, sp.part_revision, parent=part_revision, qty=qty, parent_qty=parent_qty, subpart=sp, reference=reference,
+                                   alternates=sp.alternates)
 
         flat_bom = PartBom(part_revision=self, quantity=top_level_quantity)
         flat_given_bom(flat_bom, self)
