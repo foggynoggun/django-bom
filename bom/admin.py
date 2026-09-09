@@ -9,8 +9,13 @@ from .models import (
     ManufacturerPart,
     Part,
     PartClass,
+    PartClassWorkflow,
+    PartClassWorkflowCompletedTransition,
+    PartClassWorkflowState,
+    PartClassWorkflowStateTransition,
     PartRevision,
     PartRevisionProperty,
+    PartWorkflowInstance,
     PartRevisionPropertyDefinition,
     Seller,
     SellerPart,
@@ -207,3 +212,54 @@ admin.site.register(Subpart, SubpartAdmin)
 admin.site.register(UnitDefinition, UnitDefinitionAdmin)
 admin.site.register(PartRevisionPropertyDefinition, PartRevisionPropertyDefinitionAdmin)
 admin.site.register(QuantityOfMeasure, QuantityOfMeasureAdmin)
+
+
+# ---------------------------------------------------------------------------
+# Part-class approval workflow (CHIT-001 Phase D)
+#
+# Production registered four of the five models and left PartWorkflowInstance commented out, so
+# the one table an administrator actually needs to look at when a part is stuck -- which state it
+# sits in, and who it is waiting on -- was the one that was not reachable. It is registered here.
+# ---------------------------------------------------------------------------
+
+class PartClassWorkflowAdmin(admin.ModelAdmin):
+    list_display = ('name', 'initial_state', 'organization')
+    list_filter = ('organization',)
+    search_fields = ('name',)
+
+
+class PartClassWorkflowStateAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_final_state', 'organization')
+    list_filter = ('organization', 'is_final_state')
+    search_fields = ('name',)
+    filter_horizontal = ('assigned_users',)
+
+
+class PartClassWorkflowStateTransitionAdmin(admin.ModelAdmin):
+    list_display = ('workflow', 'source_state', 'target_state', 'direction_in_workflow')
+    list_filter = ('workflow', 'direction_in_workflow')
+
+
+class PartWorkflowInstanceAdmin(admin.ModelAdmin):
+    list_display = ('part', 'workflow', 'current_state', 'assignee_list')
+    list_filter = ('workflow', 'current_state')
+    raw_id_fields = ('part',)
+    filter_horizontal = ('currently_assigned_users',)
+
+    def assignee_list(self, obj):
+        return ', '.join(u.get_username() for u in obj.currently_assigned_users.all()) or '(unassigned)'
+    assignee_list.short_description = 'Currently assigned'
+
+
+class PartClassWorkflowCompletedTransitionAdmin(admin.ModelAdmin):
+    list_display = ('part', 'transition', 'completed_by', 'timestamp', 'comments')
+    list_filter = ('completed_by',)
+    raw_id_fields = ('part',)
+    date_hierarchy = 'timestamp'
+
+
+admin.site.register(PartClassWorkflow, PartClassWorkflowAdmin)
+admin.site.register(PartClassWorkflowState, PartClassWorkflowStateAdmin)
+admin.site.register(PartClassWorkflowStateTransition, PartClassWorkflowStateTransitionAdmin)
+admin.site.register(PartWorkflowInstance, PartWorkflowInstanceAdmin)
+admin.site.register(PartClassWorkflowCompletedTransition, PartClassWorkflowCompletedTransitionAdmin)

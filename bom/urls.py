@@ -20,6 +20,15 @@ bom_patterns = [
     path('settings/', views.bom_settings, name='settings'),
     path('settings/<str:tab_anchor>/', views.bom_settings, name='settings'),
 
+    # Part-class approval workflow (CHIT-001 Phase D)
+    path('create-part-class-workflow/', views.create_part_class_workflow,
+         name='create-part-class-workflow'),
+    path('edit-part-class-workflow/<int:workflow_id>/', views.create_part_class_workflow,
+         name='part-class-workflow-edit'),
+    path('workflow-state-edit/<int:state_id>/', views.workflow_state_edit,
+         name='workflow-state-edit'),
+    path('my-workflow-tasks/', views.my_workflow_tasks, name='my-workflow-tasks'),
+
     path('manufacturers/', views.manufacturers, name='manufacturers'),
     path('manufacturer/create/', views.manufacturer_manage, name='manufacturer-create'),
     path('manufacturer/<int:manufacturer_id>/', views.manufacturer_info, name='manufacturer-info'),

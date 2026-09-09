@@ -12,6 +12,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.exceptions import NON_FIELD_ERRORS, ImproperlyConfigured, ValidationError
 from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
+from django.db import transaction
 from django.db.models import Count, ProtectedError, Q, Subquery, prefetch_related_objects
 from django.db.models.aggregates import Max
 from django.http import HttpResponse, HttpResponseRedirect
@@ -24,6 +25,7 @@ from django.views.generic.base import TemplateView
 from social_django.models import UserSocialAuth
 
 import bom.constants as constants
+import bom.functions as functions
 from bom.csv_headers import (
     ManufacturerPartCSVHeaders,
     PartClassesCSVHeaders,
@@ -33,15 +35,21 @@ from bom.decorators import bom_permission_required
 from bom.forms import (
     AddSubpartForm,
     BOMCSVForm,
+    ChangeStateAssignedUsersForm,
+    CreatePartClassWorkflowStateForm,
+    CreatePartClassWorkflowTransitionForm,
     FileForm,
     ManufacturerForm,
     ManufacturerPartForm,
     OrganizationCreateForm,
     OrganizationFormEditSettings,
     OrganizationNumberLenForm,
+    part_form_from_organization,
     PartClassCSVForm,
     PartClassForm,
     PartClassSelectionForm,
+    PartClassWorkflowForm,
+    PartClassWorkflowStateChangeForm,
     PartCSVForm,
     PartImageForm,
     PartInfoForm,
@@ -61,23 +69,27 @@ from bom.forms import (
     UserCreateForm,
     UserForm,
     UserMetaForm,
-    part_form_from_organization,
 )
 from bom.models import (
     Assembly,
     AssemblySubparts,
+    get_user_meta_model,
     Manufacturer,
     ManufacturerPart,
     Part,
     PartClass,
+    PartClassWorkflow,
+    PartClassWorkflowCompletedTransition,
+    PartClassWorkflowState,
+    PartClassWorkflowStateTransition,
     PartRevision,
     PartRevisionPropertyDefinition,
+    PartWorkflowInstance,
     QuantityOfMeasure,
     SellerPart,
     Subpart,
     UnitDefinition,
     User,
-    get_user_meta_model
 )
 from bom.permissions import BomPerms
 from bom.third_party_apis.base_api import BaseApiError
@@ -381,6 +393,11 @@ def bom_settings(request, tab_anchor=None):
     name = 'settings'
 
     part_classes = PartClass.objects.all().filter(organization=organization)
+    # CHIT-001 Phase D. Production read PartClassWorkflow.objects.all() here -- every
+    # organization's workflows, listed in every organization's settings page.
+    workflows = PartClassWorkflow.objects.available_to(organization).order_by('name')
+    workflow_states = PartClassWorkflowState.objects.available_to(organization).order_by('name')
+    workflow_state_form = None   # rebound below by a failed POST so its errors render
     property_definitions = PartRevisionPropertyDefinition.objects.available_to(organization=organization).order_by(
         'name')
     quantities_of_measure = QuantityOfMeasure.objects.available_to(organization=organization).order_by('name')
@@ -415,6 +432,8 @@ def bom_settings(request, tab_anchor=None):
     if request.method == 'POST':
         part_class_action_ids = request.POST.getlist('actions')
         part_class_action = request.POST.get('part-class-action')
+        part_class_workflow_action = request.POST.get('part-class-workflow-action')
+        workflow_state_action = request.POST.get('workflow-state-action')
         if 'submit-edit-user' in request.POST:
             tab_anchor = USER_TAB
             user_form = UserForm(request.POST, instance=user)
@@ -602,6 +621,36 @@ def bom_settings(request, tab_anchor=None):
                     messages.error(request, f"No part class found: {err}")
                 except ProtectedError as err:
                     messages.error(request, f"Cannot delete a part class because it has parts. You must delete those parts first. {err}")
+        elif 'part-class-workflow-action' in request.POST and part_class_workflow_action is not None:
+            tab_anchor = INDABOM_TAB
+            if len(part_class_action_ids) <= 0:
+                messages.warning(request, "No action was taken because no workflows were selected. Select workflows by checking the checkboxes below.")
+            elif part_class_workflow_action == 'submit-part-class-workflow-delete':
+                try:
+                    # Scoped: production filtered on id alone, so a posted id belonging to another
+                    # organization would have been deleted.
+                    PartClassWorkflow.objects.available_to(organization).filter(
+                        id__in=part_class_action_ids).delete()
+                except ProtectedError as err:
+                    messages.error(request, f"Cannot delete workflow: {err}")
+        elif 'workflow-state-action' in request.POST and workflow_state_action is not None:
+            tab_anchor = INDABOM_TAB
+            if len(part_class_action_ids) <= 0:
+                messages.warning(request, "No action was taken because no workflow states were selected. Select states by checking the checkboxes below.")
+            elif workflow_state_action == 'submit-workflow-state-delete':
+                try:
+                    PartClassWorkflowState.objects.available_to(organization).filter(
+                        id__in=part_class_action_ids).delete()
+                except ProtectedError as err:
+                    messages.error(request, f"Cannot delete workflow state: {err}")
+        elif 'submit-workflow-state-create' in request.POST:
+            tab_anchor = INDABOM_TAB
+            workflow_state_form = CreatePartClassWorkflowStateForm(request.POST, organization=organization)
+            if workflow_state_form.is_valid():
+                workflow_state_form.save()
+                messages.success(request, f"State '{workflow_state_form.cleaned_data['name']}' created.")
+            else:
+                messages.error(request, workflow_state_form.errors)
         elif 'change-number-scheme' in request.POST:
             tab_anchor = INDABOM_TAB
             if organization_parts_count > 0:
@@ -642,6 +691,9 @@ def bom_settings(request, tab_anchor=None):
     part_class_form = PartClassForm(organization=organization)
     part_class_form_action = reverse('bom:settings', kwargs={'tab_anchor': INDABOM_TAB})
     part_class_csv_form = PartClassCSVForm(organization=organization)
+    if workflow_state_form is None:
+        workflow_state_form = CreatePartClassWorkflowStateForm(organization=organization)
+    workflow_state_form_action = reverse('bom:settings', kwargs={'tab_anchor': INDABOM_TAB})
 
     return TemplateResponse(request, 'bom/settings.html', locals())
 
@@ -864,6 +916,7 @@ def part_info(request, part_id, part_revision_id=None):
     organization = profile.organization
 
     part = get_object_or_404(Part, pk=part_id)
+    workflow_instance = PartWorkflowInstance.objects.filter(part=part).first()
 
     part_revision = None
     if part_revision_id is None:
@@ -891,6 +944,18 @@ def part_info(request, part_id, part_revision_id=None):
         part_info_form = PartInfoForm(request.POST)
         if part_info_form.is_valid():
             qty = request.POST.get('quantity', 100)
+
+        if workflow_instance:
+            if 'submit-workflow-state' in request.POST or 'reject-workflow-state' in request.POST:
+                return functions.change_workflow_state_and_refresh(request, workflow_instance)
+
+            if 'change-assigned-users' in request.POST:
+                return functions.change_assigned_users_and_refresh(request, workflow_instance)
+
+    # The completed-transition history deliberately outlives the instance: closing a workflow
+    # deletes the PartWorkflowInstance but the audit trail of who approved what must remain.
+    completed_transitions = PartClassWorkflowCompletedTransition.objects.filter(part=part)
+    workflow_context = functions.get_part_workflow_context(request, workflow_instance) if workflow_instance else None
 
     try:
         qty = int(qty)
@@ -1170,6 +1235,28 @@ def create_part(request):
 
                 new_part.primary_manufacturer_part = mp
                 new_part.save()
+
+            # Open a workflow instance if the part's class defines one. CHIT-001 Phase D:
+            # production created the instance and stopped there, leaving currently_assigned_users
+            # empty -- so the part was in a state that HAD an owner while appearing in nobody's
+            # queue. 59 of 60 production instances never moved. assign_state_users() and the
+            # notification are what make the instance actually reach someone.
+            workflow = new_part.number_class.workflow if new_part.number_class else None
+            if workflow and workflow.initial_state:
+                workflow_instance = PartWorkflowInstance.objects.create(
+                    part=new_part,
+                    workflow=workflow,
+                    current_state=workflow.initial_state,
+                )
+                assignees = functions.assign_state_users(workflow_instance)
+                functions.notify_users(
+                    users=assignees,
+                    request=request,
+                    part=new_part,
+                    transition_name=workflow.initial_state.name,
+                    comments=f'New part {new_part.full_part_number()} entered {workflow.name}.',
+                    sender_name=request.user.get_full_name(),
+                )
 
             messages.success(request, f"Created {new_part.full_part_number()}")
             return HttpResponseRedirect(reverse('bom:part-info', kwargs={'part_id': new_part.id}))
@@ -1691,6 +1778,12 @@ def part_revision_release(request, part_id, part_revision_id):
         return HttpResponseRedirect(
             reverse('bom:part-info-history', kwargs={'part_id': part.id, 'part_revision_id': part_revision.id}))
 
+    # A part whose class carries an approval workflow cannot be released until that workflow
+    # reaches its final state and the instance is closed. CHIT-001 Phase D.
+    if PartWorkflowInstance.objects.filter(part=part).exists():
+        messages.error(request, "Cannot release this part until its approval workflow is finished.")
+        return HttpResponseRedirect(reverse('bom:part-info', kwargs={'part_id': part.id}) + '#workflow')
+
     action = reverse('bom:part-revision-release', kwargs={'part_id': part.id, 'part_revision_id': part_revision.id})
     title = f'Promote {part.full_part_number()} Rev {part_revision.revision} {part_revision.synopsis()} to <b>Released</b>?'
     subparts = part_revision.assembly.subparts.filter(part_revision__configuration=constants.CONFIGURATION_TYPE_DRAFT)
@@ -1872,3 +1965,150 @@ class Help(TemplateView):
         context = super(Help, self).get_context_data(**kwargs)
         context['name'] = self.name
         return context
+
+# ---------------------------------------------------------------------------
+# Part-class approval workflow (CHIT-001 Phase D)
+#
+# Production's two workflow views carried @login_required and nothing else -- no permission gate
+# and no organization scoping. Any authenticated user of any organization could open
+# /workflow-state-edit/<id>/ for any id and rewrite another organization's workflow. Both views
+# are gated on MANAGE_SCHEMA (admin-only, the same gate part-class and property-definition editing
+# use) and every lookup is scoped.
+# ---------------------------------------------------------------------------
+
+@login_required(login_url=BOM_LOGIN_URL)
+@bom_permission_required(BomPerms.MANAGE_SCHEMA)
+def create_part_class_workflow(request, workflow_id=None):
+    """Create a workflow, or edit an existing one when workflow_id is given."""
+    user = request.user
+    profile = user.bom_profile()
+    organization = profile.organization
+
+    title = 'Create New Part Class Workflow'
+    max_transitions = constants.NUMBER_WORKFLOW_TRANSITIONS_MAX
+    restored_transitions = 0
+    transition_forms = []
+    editing_existing_workflow = False
+    existing_workflow = None
+
+    if workflow_id:
+        existing_workflow = PartClassWorkflow.objects.available_to(organization).filter(
+            id=workflow_id).first()
+        if existing_workflow is None:
+            messages.error(request, 'That workflow does not exist.')
+            return HttpResponseRedirect(reverse('bom:settings', kwargs={'tab_anchor': 'indabom'}))
+
+        editing_existing_workflow = True
+        title = f"Editing Workflow '{existing_workflow.name}'"
+
+        workflow_form = PartClassWorkflowForm(instance=existing_workflow, organization=organization)
+        existing_transitions = PartClassWorkflowStateTransition.objects.filter(
+            workflow=existing_workflow, direction_in_workflow='forward')
+        for transition in existing_transitions:
+            prefix = f'trans{restored_transitions}'
+            transition_forms.append(CreatePartClassWorkflowTransitionForm(
+                instance=transition, prefix=prefix, organization=organization))
+            restored_transitions += 1
+    else:
+        workflow_form = PartClassWorkflowForm(organization=organization)
+
+    for i in range(restored_transitions, max_transitions):
+        transition_forms.append(CreatePartClassWorkflowTransitionForm(
+            prefix=f'trans{i}', organization=organization))
+
+    new_state_form = CreatePartClassWorkflowStateForm(organization=organization)
+    new_state_form_action = reverse('bom:create-part-class-workflow')
+
+    if request.method == 'POST':
+        if 'submit-workflow-state-create' in request.POST:
+            new_state_form = CreatePartClassWorkflowStateForm(request.POST, organization=organization)
+            valid_state_results = functions.validate_new_workflow_state(new_state_form)
+
+            if valid_state_results['is_valid']:
+                new_state_form.save()
+                messages.success(request, f"State '{new_state_form.cleaned_data['name']}' saved.")
+                return HttpResponseRedirect(request.path)
+
+            messages.error(request, valid_state_results['error_msg'])
+            return TemplateResponse(request, 'bom/create-part-class-workflow.html', locals())
+
+        workflow_form = PartClassWorkflowForm(request.POST, organization=organization,
+                                              instance=existing_workflow)
+
+        if 'editing_existing_workflow' in request.POST:
+            posted_id = request.POST.get('editing_existing_workflow')
+            if functions.edit_existing_workflow(request, workflow_form, organization):
+                messages.success(request, 'Changes saved.')
+            return HttpResponseRedirect(
+                reverse('bom:part-class-workflow-edit', kwargs={'workflow_id': posted_id}))
+
+        valid_workflow_results = functions.validate_new_workflow(request, workflow_form, organization)
+        if not valid_workflow_results['is_valid']:
+            messages.error(request, valid_workflow_results['error_msg'])
+            return TemplateResponse(request, 'bom/create-part-class-workflow.html', locals())
+
+        # The workflow and its transitions are one unit: a workflow saved without them is a
+        # workflow no part can ever leave.
+        with transaction.atomic():
+            workflow = workflow_form.save()
+            functions.create_transitions(valid_workflow_results['valid_transitions'], workflow)
+
+        messages.success(request, f"Workflow '{workflow.name}' created.")
+        return HttpResponseRedirect(
+            reverse('bom:part-class-workflow-edit', kwargs={'workflow_id': workflow.id}))
+
+    return TemplateResponse(request, 'bom/create-part-class-workflow.html', locals())
+
+
+@login_required(login_url=BOM_LOGIN_URL)
+@bom_permission_required(BomPerms.MANAGE_SCHEMA)
+def workflow_state_edit(request, state_id):
+    user = request.user
+    profile = user.bom_profile()
+    organization = profile.organization
+
+    state = get_object_or_404(
+        PartClassWorkflowState.objects.available_to(organization), pk=state_id)
+    title = f"Edit Workflow State '{state.name}'"
+
+    if request.method == 'POST':
+        workflow_state_form = CreatePartClassWorkflowStateForm(
+            request.POST, instance=state, organization=organization)
+        if workflow_state_form.is_valid():
+            workflow_state_form.save()
+            messages.success(request, 'Changes saved.')
+            return HttpResponseRedirect(reverse('bom:settings', kwargs={'tab_anchor': 'indabom'}))
+        return TemplateResponse(request, 'bom/edit-workflow-state.html', locals())
+
+    workflow_state_form = CreatePartClassWorkflowStateForm(instance=state, organization=organization)
+    return TemplateResponse(request, 'bom/edit-workflow-state.html', locals())
+
+
+@login_required(login_url=BOM_LOGIN_URL)
+def my_workflow_tasks(request):
+    """The in-app task queue (CHIT-001 Phase D, item D-c).
+
+    Adoption cannot rest on email alone: the production subsystem's notifications never sent, and
+    with nothing in the application to look at, 59 waiting tasks were invisible for 21 months.
+    This lists what is actually assigned to the signed-in user.
+    """
+    user = request.user
+    profile = user.bom_profile()
+    organization = profile.organization
+
+    my_instances = PartWorkflowInstance.objects.filter(
+        currently_assigned_users=user,
+        part__organization=organization,
+    ).select_related('part', 'workflow', 'current_state').order_by('part__number_class__code',
+                                                                  'part__number_item')
+
+    # Instances in a state the user owns but which were never given an assignee -- the exact
+    # condition that stranded 59 of 60 production instances. Surfaced rather than hidden.
+    unassigned_in_my_states = PartWorkflowInstance.objects.filter(
+        current_state__assigned_users=user,
+        currently_assigned_users__isnull=True,
+        part__organization=organization,
+    ).select_related('part', 'workflow', 'current_state').distinct()
+
+    title = 'My Workflow Tasks'
+    return TemplateResponse(request, 'bom/my-workflow-tasks.html', locals())

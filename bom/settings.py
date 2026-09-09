@@ -38,6 +38,40 @@ BOM_SOURCING_ENCRYPTION_KEYS = [
     k.strip() for k in os.environ.get('BOM_SOURCING_ENCRYPTION_KEYS', '').split(',') if k.strip()
 ]
 
+# Email. Required by the part-class approval workflow, which notifies the next assignees on every
+# state change (bom/functions.py). NEITHER upstream NOR the production fork defined a single
+# EMAIL_* setting, so from_email resolved to '', Django substituted 'webmaster@localhost', the
+# container ran no MTA, and send_mail's fail_silently=True swallowed the refused connection. The
+# result was three years of notifications that were never sent and never logged. Configure the
+# backend explicitly, and make the default a backend that CANNOT fail silently.
+#
+#   SENDGRID_API_KEY set  -> real mail via django-sendgrid-v5 (already a dependency)
+#   EMAIL_BACKEND set     -> whatever the operator names
+#   neither               -> console backend; mail is visible in the container log
+SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
+if os.environ.get('EMAIL_BACKEND'):
+    EMAIL_BACKEND = os.environ['EMAIL_BACKEND']
+elif SENDGRID_API_KEY:
+    EMAIL_BACKEND = 'sendgrid_backend.SendgridBackend'
+    SENDGRID_SANDBOX_MODE_IN_DEBUG = _env_bool('SENDGRID_SANDBOX_MODE_IN_DEBUG', True)
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'indabom@simplyembedded.ca')
+SERVER_EMAIL = os.environ.get('SERVER_EMAIL', DEFAULT_FROM_EMAIL)
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '25'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = _env_bool('EMAIL_USE_TLS', False)
+
+# Harmless on plain HTTP today; the day TLS is terminated in front of this, every POST would
+# otherwise fail CSRF with an error that points nowhere near here.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
+]
+
 try:
     from .local_settings import *
 except ImportError:

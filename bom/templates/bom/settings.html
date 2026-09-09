@@ -27,6 +27,11 @@
                 <a href="#part-classes" class="collection-item" id="part-classes-nav">
                     <i class="material-icons">category</i>Part Classes
                 </a>
+                {% if perms.bom.manage_schema %}
+                <a href="#workflows" class="collection-item" id="workflows-nav">
+                    <i class="material-icons">account_tree</i>Part Class Workflows
+                </a>
+                {% endif %}
                 <a href="#property-definitions" class="collection-item" id="property-definitions-nav">
                     <i class="material-icons">list_alt</i>Property Definitions
                 </a>
@@ -423,6 +428,123 @@
                 </div>
             </div>
 
+            {% comment %}
+            Part-class approval workflows (CHIT-001 Phase D). Ported from production bfc72fa.
+            The querysets behind `workflows` and `workflow_states` are organization-scoped in the
+            view; production listed every organization's.
+            {% endcomment %}
+            {% if perms.bom.manage_schema %}
+            <div id="workflows" class="settings-section">
+                <div class="section">
+                    <h4 class="section-title"><i class="material-icons teal-text text-darken-1">account_tree</i>Part Class Workflows</h4>
+                    <p>An approval workflow holds a new part in review until each state has been signed off.
+                       Attach one to a part class and every part created in that class opens an instance.</p>
+
+                    {% if workflows.count > 0 %}
+                        <form method="post" action="{% url 'bom:settings' tab_anchor='indabom' %}">
+                            {% csrf_token %}
+                            <div class="row" style="margin-bottom: 0;">
+                                <div class="input-field col s12 m4">
+                                    <select name="part-class-workflow-action" class="browser-default">
+                                        <option value="" selected>With selected...</option>
+                                        <option value="submit-part-class-workflow-delete">Delete</option>
+                                    </select>
+                                </div>
+                                <div class="col s12 m2">
+                                    <button class="waves-effect waves-light btn-flat" type="submit"
+                                            name="part-class-workflow-action-submit">Apply</button>
+                                </div>
+                            </div>
+                            <table class="highlight tight">
+                                <thead>
+                                <tr>
+                                    <th class="text-normal"><label><input type="checkbox" id="part-class-workflow-select-all"><span></span></label></th>
+                                    <th>Name</th>
+                                    <th>Initial state</th>
+                                    <th>Description</th>
+                                    <th></th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {% for workflow in workflows %}
+                                    <tr>
+                                        <td><label><input type="checkbox" class="filled-in checkbox-array" name="actions" value="{{ workflow.id }}"><span></span></label></td>
+                                        <td>{{ workflow.name }}</td>
+                                        <td>{{ workflow.initial_state|default:'—' }}</td>
+                                        <td>{{ workflow.description }}</td>
+                                        <td><a class="waves-effect waves-green btn-flat green-text text-lighten-1"
+                                               href="{% url 'bom:part-class-workflow-edit' workflow_id=workflow.id %}"><i class="material-icons">edit</i></a></td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </form>
+                    {% else %}
+                        <p class="grey-text">No workflows defined.</p>
+                    {% endif %}
+
+                    <div class="right-align" style="margin-top: 16px;">
+                        <a href="{% url 'bom:create-part-class-workflow' %}"
+                           class="waves-effect waves-light btn green lighten-1">Add Part Class Workflow</a>
+                    </div>
+
+                    <h5 style="margin-top: 32px;">Workflow States</h5>
+                    {% if workflow_states.count > 0 %}
+                        <form method="post" action="{% url 'bom:settings' tab_anchor='indabom' %}">
+                            {% csrf_token %}
+                            <div class="row" style="margin-bottom: 0;">
+                                <div class="input-field col s12 m4">
+                                    <select name="workflow-state-action" class="browser-default">
+                                        <option value="" selected>With selected...</option>
+                                        <option value="submit-workflow-state-delete">Delete</option>
+                                    </select>
+                                </div>
+                                <div class="col s12 m2">
+                                    <button class="waves-effect waves-light btn-flat" type="submit"
+                                            name="workflow-state-action-submit">Apply</button>
+                                </div>
+                            </div>
+                            <table class="highlight tight">
+                                <thead>
+                                <tr>
+                                    <th class="text-normal"><label><input type="checkbox" id="workflow-state-select-all"><span></span></label></th>
+                                    <th>Name</th>
+                                    <th>Final?</th>
+                                    <th>Assigned users</th>
+                                    <th>Description</th>
+                                    <th></th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {% for state in workflow_states %}
+                                    <tr>
+                                        <td><label><input type="checkbox" class="filled-in checkbox-array" name="actions" value="{{ state.id }}"><span></span></label></td>
+                                        <td>{{ state.name }}</td>
+                                        <td>{% if state.is_final_state %}Yes{% else %}No{% endif %}</td>
+                                        <td>
+                                            {% for u in state.assigned_users.all %}{{ u.get_full_name|default:u.username }}{% if not forloop.last %}, {% endif %}{% empty %}
+                                                <span class="red-text">Nobody</span>
+                                            {% endfor %}
+                                        </td>
+                                        <td>{{ state.description }}</td>
+                                        <td><a class="waves-effect waves-green btn-flat green-text text-lighten-1"
+                                               href="{% url 'bom:workflow-state-edit' state_id=state.id %}"><i class="material-icons">edit</i></a></td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </form>
+                    {% else %}
+                        <p class="grey-text">No workflow states defined. A workflow needs states before it can be built.</p>
+                    {% endif %}
+
+                    <div class="right-align" style="margin-top: 16px;">
+                        {% include 'bom/bom-form-modal.html' with modal_title='Create New State' form=workflow_state_form action=workflow_state_form_action name='submit-workflow-state-create' %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <div id="property-definitions" class="settings-section">
                 <div class="section">
                     <h4 class="section-title"><i class="material-icons teal-text text-darken-1">list_alt</i>Property
@@ -730,6 +852,30 @@
     <script type='text/javascript'>
         $(document).ready(function () {
             const selectAllId = '#part-class-select-all';
+            $(selectAllId).change(function () {
+                var table = $(selectAllId).closest('table');
+                if ($(selectAllId).is(":checked")) {
+                    $("input[type='checkbox']:not(:checked)", table).prop("checked", true)
+                } else {
+                    $("input[type='checkbox']:checked", table).prop("checked", false)
+                }
+            });
+        });
+
+        $(document).ready(function () {
+            const selectAllId = '#part-class-workflow-select-all';
+            $(selectAllId).change(function () {
+                var table = $(selectAllId).closest('table');
+                if ($(selectAllId).is(":checked")) {
+                    $("input[type='checkbox']:not(:checked)", table).prop("checked", true)
+                } else {
+                    $("input[type='checkbox']:checked", table).prop("checked", false)
+                }
+            });
+        });
+
+        $(document).ready(function () {
+            const selectAllId = '#workflow-state-select-all';
             $(selectAllId).change(function () {
                 var table = $(selectAllId).closest('table');
                 if ($(selectAllId).is(":checked")) {

@@ -1,0 +1,162 @@
+{% extends 'bom/bom-base.html' %}
+
+{% load static %}
+{% load materializecss %}
+
+{% block head-title %}{{ title }}{% endblock %}
+
+{% block main %}
+<link rel="stylesheet" type="text/css" href="{% static 'bom/css/style.css' %}"/>
+{% endblock %}
+
+{% block bom-menu %}
+<li><a href="{% url 'bom:settings' tab_anchor='indabom' %}">Cancel</a></li>
+{% endblock %}
+
+{% comment %}
+Workflow builder (CHIT-001 Phase D).
+
+Ported from production bfc72fa with the dead code removed. Production carried a script block that
+logged existing transitions to the console and contained a commented-out attempt to re-select the
+saved source/target options in JavaScript. It was never needed: the transition forms are built with
+instance=<transition>, so Django renders the correct option as selected server-side.
+
+Rows past the first are hidden rather than absent, and "New Transition" reveals the next hidden one.
+Hidden rows have their selects disabled so they submit nothing and validate_transition_forms skips
+them.
+{% endcomment %}
+
+{% block content %}
+<script>
+    function disableTransition(evt) {
+        const transitionDiv = document.getElementById(evt.currentTarget.transitionId);
+        const parent = transitionDiv.parentNode;
+        const selects = transitionDiv.getElementsByTagName("select");
+        const addTransBtn = document.getElementById("addNewTransitionBtn");
+
+        if (addTransBtn) {
+            addTransBtn.style.display = "";
+        }
+
+        transitionDiv.style.display = "none";
+        parent.appendChild(transitionDiv);
+
+        for (let i = 0; i < selects.length; i++) {
+            selects[i].disabled = true;
+        }
+    }
+</script>
+<div class="container-app">
+    <div class="row">
+        <form id="transitions_form" name="form"
+              action="{% if editing_existing_workflow %}{% url 'bom:part-class-workflow-edit' workflow_id=existing_workflow.id %}{% else %}{% url 'bom:create-part-class-workflow' %}{% endif %}"
+              method="post" class="col s12">
+            {% csrf_token %}
+            {% if editing_existing_workflow %}
+                <input type="hidden" name="editing_existing_workflow" value="{{ existing_workflow.id }}"/>
+            {% endif %}
+
+            <h5>Workflow Information</h5>
+            <div class="row">
+                {{ workflow_form.non_field_errors }}
+                {{ workflow_form|materializecss:'m4 s12' }}
+            </div>
+
+            <h5>State Transitions</h5>
+            <p class="grey-text">
+                Define the forward steps only. Each one automatically gets a matching backward
+                transition so a reviewer can reject a part to the previous state.
+            </p>
+
+            <div id="transitions">
+                {% for trans_form in transition_forms %}
+                    {% with index=forloop.counter0 %}
+                        <div class="row" id="transition{{ index }}"
+                             style="border: 2px solid #67ba6a; border-radius: 25px; padding: 20px 0 0 20px;
+                                    display: {% if index == 0 or index < restored_transitions %}block{% else %}none{% endif %};">
+                            {{ trans_form.non_field_errors }}
+                            {{ trans_form|materializecss:'m4 s12' }}
+                            {% if index != 0 %}
+                                <button class="waves-effect waves-light btn-flat grey-text" type="button"
+                                        id="removeTransitionBtn{{ index }}">Delete</button>
+                                <script>
+                                    (function () {
+                                        const btn = document.getElementById("removeTransitionBtn{{ index }}");
+                                        btn.transitionId = "transition{{ index }}";
+                                        btn.addEventListener("click", disableTransition);
+                                    })();
+                                </script>
+                            {% endif %}
+                        </div>
+                    {% endwith %}
+                {% endfor %}
+            </div>
+
+            <div class="row">
+                <div class="col s6">
+                    <a href="{% url 'bom:settings' tab_anchor='indabom' %}"
+                       class="waves-effect waves-light btn-flat grey-text lighten-1"
+                       style="margin-left: -16px;">Cancel</a>
+                </div>
+                <div class="col s6 right-align">
+                    <button class="waves-effect waves-light btn green lighten-1" type="button"
+                            id="addNewTransitionBtn">New Transition</button>
+                    <button class="waves-effect waves-light btn green lighten-1" type="submit"
+                            name="action">Save</button>
+                </div>
+            </div>
+        </form>
+
+        <script>
+            (function () {
+                const maxTransitions = parseInt("{{ max_transitions }}", 10);
+                const addBtn = document.getElementById("addNewTransitionBtn");
+
+                function nextHiddenRow() {
+                    for (let i = 1; i < maxTransitions; i++) {
+                        const row = document.getElementById("transition" + i);
+                        if (row && row.style.display === "none") {
+                            return {row: row, index: i};
+                        }
+                    }
+                    return null;
+                }
+
+                addBtn.addEventListener("click", function () {
+                    const next = nextHiddenRow();
+                    if (!next) {
+                        addBtn.style.display = "none";
+                        return;
+                    }
+
+                    const selects = next.row.getElementsByTagName("select");
+                    next.row.parentNode.appendChild(next.row);
+                    next.row.style.display = "block";
+                    for (let i = 0; i < selects.length; i++) {
+                        selects[i].removeAttribute("disabled");
+                    }
+
+                    if (!nextHiddenRow()) {
+                        addBtn.style.display = "none";
+                    }
+                });
+
+                // Hidden rows must not submit: an empty source/target pair would otherwise be
+                // offered to the form and rejected as invalid.
+                for (let i = 1; i < maxTransitions; i++) {
+                    const row = document.getElementById("transition" + i);
+                    if (row && row.style.display === "none") {
+                        const selects = row.getElementsByTagName("select");
+                        for (let j = 0; j < selects.length; j++) {
+                            selects[j].disabled = true;
+                        }
+                    }
+                }
+            })();
+        </script>
+
+        <p class="grey-text">Creating a new state reloads this page. Save your workflow first.</p>
+        {% include 'bom/bom-form-modal.html' with modal_title='Create New State' form=new_state_form action=new_state_form_action name='submit-workflow-state-create' %}
+    </div>
+</div>
+{% endblock %}

@@ -32,6 +32,10 @@ from .models import (
     ManufacturerPart,
     Part,
     PartClass,
+    PartClassWorkflow,
+    PartClassWorkflowCompletedTransition,
+    PartClassWorkflowState,
+    PartClassWorkflowStateTransition,
     PartRevision,
     PartRevisionProperty,
     PartRevisionPropertyDefinition,
@@ -601,13 +605,20 @@ PartRevisionPropertyDefinitionFormSet = forms.formset_factory(
 class PartClassForm(OrganizationModelForm):
     class Meta:
         model = PartClass
-        fields = ['code', 'name', 'comment']
+        fields = ['code', 'name', 'comment', 'workflow']
 
     def __init__(self, *args, **kwargs):
         self.ignore_unique_constraint = kwargs.pop('ignore_unique_constraint', False)
         super().__init__(*args, **kwargs)
         self.fields['code'].required = False
         self.fields['name'].required = False
+        # CHIT-001 Phase D. Attaching a workflow here is what causes create_part to open an
+        # instance for every new part in this class.
+        self.fields['workflow'].required = False
+        self.fields['workflow'].label = 'Approval workflow'
+        self.fields['workflow'].empty_label = 'None -- parts in this class need no approval'
+        self.fields['workflow'].queryset = PartClassWorkflow.objects.available_to(
+            self.organization).order_by('name')
         self.fields['code'].validators.extend([
             MaxLengthValidator(self.organization.number_class_code_len),
             MinLengthValidator(self.organization.number_class_code_len)
@@ -1610,3 +1621,159 @@ def add_nonfield_error_from_existing(from_form, to_form, prefix=''):
         for error in errors:
             for msg in error.messages:
                 to_form.add_error(None, f'{prefix}{field}: {msg}')
+
+# ==========================================
+# Part-class approval workflow (CHIT-001 Phase D)
+#
+# Ported from production bfc72fa. Production's forms are not organization-scoped and reach
+# get_user_model().objects.all() / PartClassWorkflowState.objects.all() directly, which exposes
+# every organization's users and states in the pickers. Each queryset is scoped in __init__,
+# matching the pattern already used by AddSubpartForm.alternates.
+#
+# Production's PartClassWorkflowStateForm is NOT ported: views.py imported it and never
+# instantiated it, and its body declared the model's CharField `name` as a ModelChoiceField over
+# PartClassWorkflowState, which could not have validated.
+# ==========================================
+
+def _org_user_queryset(organization):
+    """Users belonging to one organization, ordered for a stable picker."""
+    return User.objects.filter(
+        id__in=UserMeta.objects.filter(organization=organization).values_list('user', flat=True)
+    ).order_by('first_name', 'last_name', 'username')
+
+
+class CreatePartClassWorkflowStateForm(OrganizationModelForm):
+    class Meta:
+        model = PartClassWorkflowState
+        fields = ['name', 'assigned_users', 'is_final_state', 'description']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['name'] = forms.CharField(label='State Name', required=True)
+        # assigned_users stays required: a state with no assignee is a state whose work lands in
+        # nobody's queue, which is how 59 of 60 production instances came to be stranded.
+        self.fields['assigned_users'] = forms.ModelMultipleChoiceField(
+            label='Assigned Users',
+            required=True,
+            queryset=_org_user_queryset(self.organization),
+            widget=forms.SelectMultiple(attrs={'class': 'browser-default'}),
+        )
+        # Production used a plain ChoiceField over ((False,'No'),(True,'Yes')), which submits the
+        # STRINGS 'False'/'True'. It survived only because Django's model BooleanField.to_python
+        # happens to parse them. TypedChoiceField returns a real bool.
+        self.fields['is_final_state'] = forms.TypedChoiceField(
+            label='Final State in Workflow?',
+            choices=((False, 'No'), (True, 'Yes')),
+            coerce=lambda v: v in (True, 'True', 'true', '1'),
+            initial=False,
+            required=True,
+            widget=forms.Select(),
+        )
+
+
+class CreatePartClassWorkflowTransitionForm(OrganizationFormMixin, forms.ModelForm):
+    class Meta:
+        model = PartClassWorkflowStateTransition
+        fields = ['source_state', 'target_state']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        states = PartClassWorkflowState.objects.available_to(self.organization).order_by('name')
+        self.fields['source_state'] = forms.ModelChoiceField(
+            label='Source State', queryset=states, required=True)
+        self.fields['target_state'] = forms.ModelChoiceField(
+            label='Target State', queryset=states, required=True)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        source_state = cleaned_data.get('source_state')
+        target_state = cleaned_data.get('target_state')
+        # A self-transition is silently accepted by production and then renders as a self-edge the
+        # diagram builder has to guard against.
+        if source_state and target_state and source_state == target_state:
+            self.add_error('target_state', "A transition's source and target states must differ.")
+        return cleaned_data
+
+
+class PartClassWorkflowForm(OrganizationModelForm):
+    class Meta:
+        model = PartClassWorkflow
+        fields = ['name', 'initial_state', 'description']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['name'].label = 'Workflow Name'
+        self.fields['name'].required = True
+        self.fields['initial_state'] = forms.ModelChoiceField(
+            label='Initial State',
+            queryset=PartClassWorkflowState.objects.available_to(self.organization).order_by('name'),
+        )
+
+    def clean_name(self):
+        # Backs the uniq_workflow_name_per_org constraint with a form-level message, so a duplicate
+        # name is a field error rather than an IntegrityError 500.
+        name = self.cleaned_data.get('name')
+        if name and PartClassWorkflow.objects.filter(
+                name__iexact=name, organization=self.organization).exclude(pk=self.instance.pk).exists():
+            self.add_error('name', f"A workflow named {name} is already defined.")
+        return name
+
+
+class ChangeStateAssignedUsersForm(OrganizationFormMixin, forms.Form):
+    """Reassign the users currently responsible for a part's workflow instance.
+
+    Production declared this as a ModelForm over PartClassWorkflowState while never saving it --
+    the view reads cleaned_data and calls workflow_instance.currently_assigned_users.set().
+    A plain Form says what it actually is, and returning User objects rather than the
+    MultipleChoiceField's raw string ids removes an implicit coercion in .set().
+    """
+    assigned_users = forms.ModelMultipleChoiceField(
+        label='New assigned users',
+        required=True,
+        queryset=User.objects.none(),
+        widget=forms.SelectMultiple(attrs={'class': 'browser-default'}),
+    )
+    comments = forms.CharField(label='Comments to new assigned users', required=False)
+    notify_new_users = forms.BooleanField(label='Notify new assigned users?', required=False, initial=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['assigned_users'].queryset = _org_user_queryset(self.organization)
+
+
+class PartClassWorkflowStateChangeForm(forms.ModelForm):
+    class Meta:
+        model = PartClassWorkflowCompletedTransition
+        fields = ['transition', 'comments', 'notifying_next_users']
+
+    def __init__(self, *args, **kwargs):
+        forward_transitions = kwargs.pop('forward_transitions', None)
+        backward_transitions = kwargs.pop('backward_transitions', None)
+        final_transition = kwargs.pop('final_transition', None)
+
+        super().__init__(*args, **kwargs)
+
+        if forward_transitions is not None and not final_transition:   # advancing
+            self.fields['transition'] = forms.ModelChoiceField(
+                forward_transitions, label='Select Forward Transition', required=True)
+        elif backward_transitions is not None:                          # rejecting
+            self.fields['transition'] = forms.ModelChoiceField(
+                backward_transitions, label='Select Backward Transition', required=True)
+        elif final_transition:                                          # closing the workflow
+            self.fields['transition'] = forms.ModelChoiceField(
+                PartClassWorkflowStateTransition.objects.none(),
+                widget=forms.HiddenInput(), required=False)
+        else:                                                           # bound, re-validating a POST
+            self.fields['transition'] = forms.ModelChoiceField(
+                PartClassWorkflowStateTransition.objects.all(), label='Transition', required=False)
+
+        if final_transition:
+            self.fields['comments'] = forms.CharField(
+                label='Comments. Final state: workflow finished.', widget=forms.Textarea, required=False)
+            self.fields['notifying_next_users'] = forms.BooleanField(
+                widget=forms.HiddenInput(), required=False)
+        else:
+            self.fields['comments'] = forms.CharField(
+                label='Comments', widget=forms.Textarea, required=False)
+            self.fields['notifying_next_users'] = forms.BooleanField(
+                label='Notify next users?', required=False, initial=True)

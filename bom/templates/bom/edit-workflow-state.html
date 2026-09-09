@@ -1,0 +1,38 @@
+{% extends 'bom/bom-base.html' %}
+
+{% load static %}
+{% load materializecss %}
+
+{% block head-title %}{{ title }}{% endblock %}
+
+{% block main %}
+    <link rel="stylesheet" type="text/css" href="{% static 'bom/css/style.css' %}"/>
+{% endblock %}
+
+{% block content %}
+    <div class="container-app">
+        <div class="row">
+            <h5>{{ title }}</h5>
+            <form action="{% url 'bom:workflow-state-edit' state_id=state.id %}" method="post" class="col s12">
+                {% csrf_token %}
+                {{ workflow_state_form.non_field_errors }}
+                {{ workflow_state_form.name|materializecss:'s12 m6' }}
+                {{ workflow_state_form.description|materializecss:'s12 m6' }}
+                {{ workflow_state_form.is_final_state|materializecss:'s12 m6' }}
+                {{ workflow_state_form.assigned_users|materializecss:'s12 m6' }}
+
+                <div class="row">
+                    <div class="col s6">
+                        {# Production concatenated the anchor onto the URL as a bare string. #}
+                        <a href="{% url 'bom:settings' tab_anchor='indabom' %}"
+                           class="waves-effect waves-light btn-flat grey-text lighten-1"
+                           style="margin-left: -16px;">Cancel</a>
+                    </div>
+                    <div class="col s6 right-align">
+                        <button class="waves-effect waves-light btn green lighten-1" type="submit" name="action">Save</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+{% endblock %}

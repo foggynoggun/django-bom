@@ -207,6 +207,8 @@ class UserMeta(AbstractUserMeta):
 
 class PartClass(OrganizationScopedModel):
     code = models.CharField(max_length=NUMBER_CLASS_CODE_LEN_MAX, validators=[alphanumeric])
+    workflow = models.ForeignKey('PartClassWorkflow', null=True, blank=True, default=None,
+                                 on_delete=models.SET_NULL)
     name = models.CharField(max_length=255, default=None)
     comment = models.CharField(max_length=255, default='', blank=True)
     sourcing_enabled = models.BooleanField(default=False)
@@ -1132,3 +1134,93 @@ class SellerPart(models.Model, AsDictModel):
 
 
 User.add_to_class('bom_profile', _user_meta)
+
+
+# ---------------------------------------------------------------------------
+# Part-class approval workflow ("Component Release")
+#
+# Ported from production bfc72fa with five deliberate corrections, each noted
+# inline. See CHIT-001-indabom-port-plan.md, Phase D.
+# ---------------------------------------------------------------------------
+
+class PartClassWorkflowState(OrganizationScopedModel):
+    """A step in a part-class approval workflow."""
+    name = models.CharField(max_length=255, default='', null=True, blank=True)
+    is_final_state = models.BooleanField(default=False, null=False)
+    assigned_users = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True)
+    description = models.CharField(max_length=255, default='', blank=True)
+
+    def __str__(self):
+        return f'{self.name}[final]' if self.is_final_state else f'{self.name}'
+
+
+class PartClassWorkflow(OrganizationScopedModel):
+    """An ordered set of states parts move through before release."""
+    name = models.CharField(max_length=255, default=None)
+    initial_state = models.ForeignKey(PartClassWorkflowState, null=True, blank=True, default=None,
+                                      on_delete=models.CASCADE)
+    description = models.CharField(max_length=255, default='', blank=True)
+
+    class Meta:
+        # CORRECTION 1: production declared name unique=True GLOBALLY, which would stop a second
+        # organization ever having its own "Component Release" workflow. Unique per organization.
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'name'], name='uniq_workflow_name_per_org'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    # CORRECTION 2: production's copy() is omitted. It referenced self.current_state, which is not a
+    # field on this model, so it raised AttributeError on every call -- dead code, not a feature.
+
+
+class PartClassWorkflowStateTransition(models.Model):
+    """A permitted move between two states of one workflow.
+
+    Not organization-scoped directly: it is reachable only via `workflow`, which is scoped.
+    Adding a second organization FK here would denormalise and could drift out of step with the
+    workflow's own.
+    """
+    workflow = models.ForeignKey(PartClassWorkflow, null=False, default=None, on_delete=models.CASCADE)
+    source_state = models.ForeignKey(PartClassWorkflowState, null=False, on_delete=models.CASCADE,
+                                     related_name='source_state')
+    target_state = models.ForeignKey(PartClassWorkflowState, null=False, on_delete=models.CASCADE,
+                                     related_name='target_state')
+    direction_in_workflow = models.CharField(max_length=15, default='forward')
+
+    class Meta:
+        unique_together = (('source_state', 'target_state', 'workflow'),)
+
+    def __str__(self):
+        return '{} -> {}'.format(self.source_state, self.target_state)
+
+
+class PartWorkflowInstance(models.Model):
+    """One part's progress through a workflow. Scoped transitively via `part`."""
+    part = models.ForeignKey(Part, null=False, on_delete=models.CASCADE, default=None)
+    workflow = models.ForeignKey(PartClassWorkflow, on_delete=models.CASCADE, default=None)
+    current_state = models.ForeignKey(PartClassWorkflowState, on_delete=models.CASCADE, default=None, null=True)
+    # CORRECTION 3: production had null=True on this ManyToManyField. It is meaningless on m2m and
+    # raises Django system-check warning W340. Removed.
+    currently_assigned_users = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True)
+
+    def __str__(self):
+        return self.workflow.name
+
+
+class PartClassWorkflowCompletedTransition(models.Model):
+    """An audit row: who moved a part between states, and when."""
+    transition = models.ForeignKey(PartClassWorkflowStateTransition, on_delete=models.CASCADE,
+                                   null=True, default=None)
+    # CORRECTION 4: production defaulted completed_by to DEFAULT_PK = 1 -- a hardcoded user id. That
+    # attributes work to whoever happens to be user 1, and breaks if no such user exists. The field
+    # is already null=True with on_delete=SET_NULL, so no default is needed.
+    completed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    comments = models.CharField(max_length=500, null=True, blank=True, default='')
+    timestamp = models.DateTimeField(auto_now_add=True, blank=True)
+    part = models.ForeignKey(Part, null=False, default=None, on_delete=models.CASCADE)
+    notifying_next_users = models.BooleanField(default=True, verbose_name="Notifying next users")
+
+    class Meta:
+        ordering = ('-timestamp',)

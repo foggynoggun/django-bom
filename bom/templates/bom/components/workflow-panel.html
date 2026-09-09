@@ -1,0 +1,133 @@
+{% comment %}
+Part-info workflow tab (CHIT-001 Phase D).
+
+Extracted into a component rather than inlined the way production had it, so part-info.html stays
+readable and the panel can be exercised on its own.
+
+Three things production carried are gone:
+  * {{ workflow_str }} -- an undefined variable that always rendered empty.
+  * an optionButtonClicked() script that built and submitted a form by hand, defined and never called.
+  * <pre><h7> -- h7 is not an HTML element, and it was nested inside <pre>.
+The current state is marked from workflow_str_lines.is_current, computed by name equality in
+bom/functions.py; production tested `current_state.name in line`, which also matched any state whose
+name contained another's.
+{% endcomment %}
+
+{% if workflow_instance or completed_transitions %}
+<div id="workflow" class="col s12">
+    <h4 class="printer-show">Workflow for {{ part }}</h4>
+
+    <ul class="collection with-header">
+        <li class="collection-header"><h5>Workflow Status</h5></li>
+        <li class="collection-item">
+            <div class="row">
+                <div class="col s12 m4" id="workflow_diagram">
+                    {% if workflow_context.workflow_str_lines %}
+                        <div class="center-align grey-text">Workflow Diagram</div>
+                        <pre id="workflow_diagram_str" style="text-align: left; font-size: 0.9em;">{% for row in workflow_context.workflow_str_lines %}{% if row.is_current %}<strong>{{ row.line }}  &#9664; current</strong>{% else %}{{ row.line }}{% endif %}
+{% endfor %}</pre>
+                    {% endif %}
+                </div>
+
+                <div class="col s12 m8">
+                    {% if workflow_instance %}
+                        <div class="row">
+                            <div class="col s4 l3 text-right">Part:</div>
+                            <div class="col s8 l9">{{ part }}</div>
+                        </div>
+                        <div class="row">
+                            <div class="col s4 l3 text-right">Workflow:</div>
+                            <div class="col s8 l9">{{ workflow_instance.workflow.name }}</div>
+                        </div>
+                        <div class="row">
+                            <div class="col s4 l3 text-right">Current state:</div>
+                            <div class="col s8 l9">{{ workflow_instance.current_state }}</div>
+                        </div>
+                        {% if workflow_instance.current_state.description %}
+                        <div class="row">
+                            <div class="col s4 l3 text-right">State description:</div>
+                            <div class="col s8 l9">{{ workflow_instance.current_state.description }}</div>
+                        </div>
+                        {% endif %}
+                        <div class="row">
+                            <div class="col s4 l3 text-right">Assigned to:</div>
+                            <div class="col s8 l9">
+                                {% for assigned_user in workflow_context.all_assigned_users %}
+                                    <div style="margin: 0">{{ assigned_user.get_full_name|default:assigned_user.username }}{% if assigned_user.email %} ({{ assigned_user.email }}){% endif %}</div>
+                                {% empty %}
+                                    <div class="red-text">Nobody. This part is not in anyone's queue.</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    {% else %}
+                        <div class="row">
+                            <div class="col s12 green-text">Workflow complete. This part can be released.</div>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if workflow_context.is_assigned_user %}
+                <div class="row">
+                    {% if workflow_context.reject_state_form %}
+                        <div style="float: left">
+                            {% include 'bom/bom-form-modal.html' with modal_title='Reject Current State' form=workflow_context.reject_state_form action=workflow_context.change_state_form_action name='reject-workflow-state' %}
+                        </div>
+                    {% endif %}
+                    <div style="float: right;">
+                        {% include 'bom/bom-form-modal.html' with modal_title='Approve Current State' form=workflow_context.submit_state_form action=workflow_context.change_state_form_action name='submit-workflow-state' %}
+                    </div>
+                </div>
+            {% endif %}
+        </li>
+
+        <li class="collection-header"><h5>Transition Log</h5></li>
+        <li class="collection-item">
+            <div class="responsive-table-wrapper">
+                <table class="highlight tight">
+                    <thead>
+                    <tr>
+                        <th>Source State</th>
+                        <th>Target State</th>
+                        <th>Submitted By</th>
+                        <th>Comments</th>
+                        <th>Timestamp</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for completed_transition in completed_transitions %}
+                        <tr id="log{{ completed_transition.id }}">
+                            <td>{{ completed_transition.transition.source_state|default:'—' }}</td>
+                            <td>{{ completed_transition.transition.target_state|default:'Workflow closed' }}</td>
+                            <td>{{ completed_transition.completed_by|default:'(deleted user)' }}</td>
+                            <td style="word-wrap: break-word; max-width: 500px;">{{ completed_transition.comments }}</td>
+                            <td>{{ completed_transition.timestamp }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="5" class="grey-text">No transitions recorded yet.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </li>
+
+        {% if workflow_instance %}
+            <li class="collection-header"><h5>Options</h5></li>
+            <li class="collection-item">
+                <div class="row">
+                    {% if user.is_superuser or profile.role == 'A' %}
+                        {% if workflow_context.reject_state_form %}
+                            {% include 'bom/bom-form-modal.html' with modal_title='Force reject state' form=workflow_context.reject_state_form action=workflow_context.change_state_form_action name='reject-workflow-state' %}
+                        {% endif %}
+                        {% include 'bom/bom-form-modal.html' with modal_title='Force approve state' form=workflow_context.submit_state_form action=workflow_context.change_state_form_action name='submit-workflow-state' %}
+                    {% endif %}
+
+                    {% if workflow_context.change_assigned_users_form %}
+                        {% include 'bom/bom-form-modal.html' with modal_title='Change assigned users' form=workflow_context.change_assigned_users_form action=workflow_context.change_state_form_action name='change-assigned-users' %}
+                    {% endif %}
+                </div>
+            </li>
+        {% endif %}
+    </ul>
+</div>
+{% endif %}

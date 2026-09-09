@@ -60,6 +60,7 @@ dependencies = [
     "pytz>=2024.1",
     "cachetools",
     "pillow>=12.3.0",
+    "anytree>=2.13,<3",  # PartClassWorkflow state diagrams (CHIT-001 Phase D)
 ]
 
 [dependency-groups]

@@ -1,0 +1,63 @@
+{% extends 'bom/bom-base.html' %}
+{% load static %}
+
+{% block head-title %}{{ title }}{% endblock %}
+
+{% block main %}
+    <link rel="stylesheet" type="text/css" href="{% static 'bom/css/style.css' %}"/>
+{% endblock %}
+
+{% comment %}
+In-app workflow task queue (CHIT-001 Phase D, item D-c).
+
+New in the port. The production subsystem had no equivalent: the only way to learn that a part was
+waiting on you was an email that was never actually sent, so 59 of 60 instances sat untouched for
+21 months with nothing in the application to show for it.
+{% endcomment %}
+
+{% block content %}
+<div class="container-app">
+    <h5>{{ title }}</h5>
+
+    <ul class="collection with-header">
+        <li class="collection-header"><h6>Assigned to me</h6></li>
+        {% for instance in my_instances %}
+            <li class="collection-item">
+                <div>
+                    <a href="{% url 'bom:part-info' part_id=instance.part.id %}#workflow">
+                        <strong>{{ instance.part.full_part_number }}</strong>
+                    </a>
+                    &mdash; {{ instance.workflow.name }}:
+                    <span class="green-text text-darken-2">{{ instance.current_state.name }}</span>
+                    {% if instance.current_state.description %}
+                        <br/><span class="grey-text">{{ instance.current_state.description }}</span>
+                    {% endif %}
+                </div>
+            </li>
+        {% empty %}
+            <li class="collection-item grey-text">Nothing is waiting on you.</li>
+        {% endfor %}
+    </ul>
+
+    {% if unassigned_in_my_states %}
+        <ul class="collection with-header">
+            <li class="collection-header">
+                <h6>Unassigned, in a state you own</h6>
+                <span class="grey-text">
+                    These parts reached a state you are listed against but were never assigned to
+                    anyone. Left alone they stall silently.
+                </span>
+            </li>
+            {% for instance in unassigned_in_my_states %}
+                <li class="collection-item">
+                    <a href="{% url 'bom:part-info' part_id=instance.part.id %}#workflow">
+                        <strong>{{ instance.part.full_part_number }}</strong>
+                    </a>
+                    &mdash; {{ instance.workflow.name }}:
+                    <span class="orange-text text-darken-3">{{ instance.current_state.name }}</span>
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+</div>
+{% endblock %}
